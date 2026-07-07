@@ -3,12 +3,47 @@ name: Testing
 on: [push, pull_request]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Ruff (Python lint)
+        run: pipx run ruff check .
+      - name: Ruff (Python format)
+        run: pipx run ruff format --check .
+      - name: Mypy (type check)
+        run: pipx run mypy
+      - name: Rustfmt
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  rust:
+    name: Rust unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test
+        run: cargo test
+
   test:
+    name: Python ${{ matrix.python-version }}
+    needs: [lint, rust]
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: ["ubuntu-latest"]
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
       #----------------------------------------------
@@ -22,12 +57,34 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       #----------------------------------------------
+      #  Rust toolchain (needed to build the _speedups extension)
+      #----------------------------------------------
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      #----------------------------------------------
       #       install dependencies (dev group)
       #----------------------------------------------
       - name: Install dependencies
         run: uv sync --locked --dev
       #----------------------------------------------
-      #    add matrix specifics and run test suite
+      #  native backend + coverage; test_backends.py also
+      #  exercises the pure-Python core in the same run
       #----------------------------------------------
-      - name: Run tests
-        run: uv run pytest --cov=pycpfcnpj/
+      - name: Run tests (native backend + coverage)
+        run: uv run pytest --cov=pycpfcnpj --cov-report=xml
+      #----------------------------------------------
+      #  force the pure-Python fallback path end-to-end
+      #----------------------------------------------
+      - name: Run tests (pure-Python fallback)
+        env:
+          PYCPFCNPJ_PUREPYTHON: "1"
+        run: uv run pytest
+      #----------------------------------------------
+      #    upload coverage (needs CODECOV_TOKEN secret)
+      #----------------------------------------------
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          fail_ci_if_error: false
